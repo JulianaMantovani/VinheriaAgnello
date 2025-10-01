@@ -1,155 +1,103 @@
 package com.vinheria.controller;
 
-import com.vinheria.model.ItemCarrinho;
-import com.vinheria.model.Produto;
 import com.vinheria.dao.ProdutoDAO;
-import javax.servlet.*;
-import javax.servlet.http.*;
+import com.vinheria.model.Produto;
+
+import javax.servlet.ServletException;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
 import java.io.IOException;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Map;
+import java.sql.SQLException;
 import java.util.HashMap;
+import java.util.Map;
 
+@WebServlet("/carrinho")
 public class CarrinhoServlet extends HttpServlet {
-    private ProdutoDAO produtoDAO;
 
-    @Override
-    public void init() throws ServletException {
-        super.init();
-        produtoDAO = new ProdutoDAO();
+    @SuppressWarnings("unchecked")
+    private Map<Long, Integer> getCarrinho(HttpSession session) {
+        Object attr = session.getAttribute("carrinho");
+        if (attr == null) {
+            Map<Long, Integer> novo = new HashMap<>();
+            session.setAttribute("carrinho", novo);
+            return novo;
+        }
+        return (Map<Long, Integer>) attr;
     }
 
     @Override
-    protected void doGet(HttpServletRequest request, HttpServletResponse response) 
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp)
             throws ServletException, IOException {
-        
-        try {
-            HttpSession session = request.getSession();
-            
-            // Buscar itens do carrinho da sessão
-            @SuppressWarnings("unchecked")
-            Map<Integer, ItemCarrinho> carrinho = (Map<Integer, ItemCarrinho>) session.getAttribute("carrinho");
-            if (carrinho == null) {
-                carrinho = new HashMap<>();
-            }
-            
-            List<ItemCarrinho> itens = new ArrayList<>(carrinho.values());
-            double subtotal = calcularSubtotal(itens);
-            double total = subtotal; // Sem frete por enquanto
-            
-            request.setAttribute("itensCarrinho", itens);
-            request.setAttribute("subtotal", subtotal);
-            request.setAttribute("total", total);
-            request.setAttribute("totalItens", itens.size());
-            
-            // Forward para carrinho.jsp
-            RequestDispatcher dispatcher = request.getRequestDispatcher("/carrinho.jsp");
-            dispatcher.forward(request, response);
-            
-        } catch (Exception e) {
-            e.printStackTrace();
-            response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "Erro ao carregar carrinho");
-        }
+        req.getRequestDispatcher("/carrinho.jsp").forward(req, resp);
     }
 
     @Override
-    protected void doPost(HttpServletRequest request, HttpServletResponse response) 
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp)
             throws ServletException, IOException {
-        
-        try {
-            String acao = request.getParameter("acao");
-            HttpSession session = request.getSession();
-            
-            @SuppressWarnings("unchecked")
-            Map<Integer, ItemCarrinho> carrinho = (Map<Integer, ItemCarrinho>) session.getAttribute("carrinho");
-            if (carrinho == null) {
-                carrinho = new HashMap<>();
-            }
-            
-            if ("adicionar".equals(acao)) {
-                adicionarItem(request, carrinho);
-            } else if ("remover".equals(acao)) {
-                removerItem(request, carrinho);
-            } else if ("atualizar".equals(acao)) {
-                atualizarQuantidade(request, carrinho);
-            } else if ("aplicarCupom".equals(acao)) {
-                aplicarCupom(request, carrinho);
-            }
-            
-            session.setAttribute("carrinho", carrinho);
-            session.setAttribute("carrinhoCount", carrinho.size());
-            
-            response.sendRedirect("carrinho");
-            
-        } catch (Exception e) {
-            e.printStackTrace();
-            response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "Erro ao processar carrinho");
-        }
-    }
-    
-    private void adicionarItem(HttpServletRequest request, Map<Integer, ItemCarrinho> carrinho) {
-        try {
-            int produtoId = Integer.parseInt(request.getParameter("produtoId"));
-            Produto produto = produtoDAO.buscarPorId(produtoId);
-            
-            if (produto != null) {
-                ItemCarrinho item = carrinho.get(produtoId);
-                if (item == null) {
-                    item = new ItemCarrinho(produto, 1);
-                    carrinho.put(produtoId, item);
-                } else {
-                    item.setQuantidade(item.getQuantidade() + 1);
+
+        String action = req.getParameter("action");
+        if (action == null) action = "add";
+
+        HttpSession session = req.getSession();
+        Map<Long, Integer> carrinho = getCarrinho(session);
+
+        switch (action) {
+            case "add": {
+                String idParam = req.getParameter("id");
+                String qtyParam = req.getParameter("qty");
+
+                if (idParam == null || qtyParam == null) {
+                    resp.sendError(HttpServletResponse.SC_BAD_REQUEST, "Parâmetros id/qty são obrigatórios.");
+                    return;
                 }
-            }
-        } catch (NumberFormatException e) {
-            e.printStackTrace();
-        }
-    }
-    
-    private void removerItem(HttpServletRequest request, Map<Integer, ItemCarrinho> carrinho) {
-        try {
-            int produtoId = Integer.parseInt(request.getParameter("produtoId"));
-            carrinho.remove(produtoId);
-        } catch (NumberFormatException e) {
-            e.printStackTrace();
-        }
-    }
-    
-    private void atualizarQuantidade(HttpServletRequest request, Map<Integer, ItemCarrinho> carrinho) {
-        try {
-            int produtoId = Integer.parseInt(request.getParameter("produtoId"));
-            String operacao = request.getParameter("operacao");
-            
-            ItemCarrinho item = carrinho.get(produtoId);
-            if (item != null) {
-                int novaQuantidade = item.getQuantidade();
-                if ("aumentar".equals(operacao)) {
-                    novaQuantidade++;
-                } else if ("diminuir".equals(operacao)) {
-                    novaQuantidade--;
+
+                long id;
+                int qty;
+                try {
+                    id = Long.parseLong(idParam);
+                    qty = Math.max(1, Integer.parseInt(qtyParam));
+                } catch (NumberFormatException e) {
+                    resp.sendError(HttpServletResponse.SC_BAD_REQUEST, "Parâmetros inválidos.");
+                    return;
                 }
-                
-                if (novaQuantidade <= 0) {
-                    carrinho.remove(produtoId);
-                } else {
-                    item.setQuantidade(novaQuantidade);
+
+                // ✅ TRATANDO SQLException AQUI
+                try {
+                    Produto produto = new ProdutoDAO().buscarPorId(id);
+                    if (produto != null) {
+                        carrinho.put(id, carrinho.getOrDefault(id, 0) + qty);
+                    }
+                } catch (SQLException e) {
+                    throw new ServletException("Erro ao buscar produto para o carrinho", e);
                 }
+
+                resp.sendRedirect(req.getContextPath() + "/carrinho");
+                return;
             }
-        } catch (NumberFormatException e) {
-            e.printStackTrace();
+
+            case "remove": {
+                String idParam = req.getParameter("id");
+                if (idParam != null) {
+                    try {
+                        long id = Long.parseLong(idParam);
+                        carrinho.remove(id);
+                    } catch (NumberFormatException ignored) { }
+                }
+                resp.sendRedirect(req.getContextPath() + "/carrinho");
+                return;
+            }
+
+            case "clear": {
+                carrinho.clear();
+                resp.sendRedirect(req.getContextPath() + "/carrinho");
+                return;
+            }
+
+            default:
+                resp.sendRedirect(req.getContextPath() + "/carrinho");
         }
-    }
-    
-    private void aplicarCupom(HttpServletRequest request, Map<Integer, ItemCarrinho> carrinho) {
-        String cupom = request.getParameter("cupom");
-        // Implementar lógica de cupom aqui
-    }
-    
-    private double calcularSubtotal(List<ItemCarrinho> itens) {
-        return itens.stream()
-                .mapToDouble(ItemCarrinho::getSubtotal)
-                .sum();
     }
 }
-
