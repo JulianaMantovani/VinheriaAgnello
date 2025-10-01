@@ -1,74 +1,56 @@
 package com.vinheria.controller;
 
-import com.vinheria.model.Produto;
-import com.vinheria.model.Avaliacao;
 import com.vinheria.dao.ProdutoDAO;
-import com.vinheria.dao.AvaliacaoDAO;
-import javax.servlet.*;
-import javax.servlet.http.*;
+import com.vinheria.model.Produto;
+
+import javax.servlet.ServletException;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.sql.SQLException;
 import java.util.List;
 
+@WebServlet("/produto")
 public class ProdutoServlet extends HttpServlet {
-    private ProdutoDAO produtoDAO;
-    private AvaliacaoDAO avaliacaoDAO;
 
     @Override
-    public void init() throws ServletException {
-        super.init();
-        produtoDAO = new ProdutoDAO();
-        avaliacaoDAO = new AvaliacaoDAO();
-    }
-
-    @Override
-    protected void doGet(HttpServletRequest request, HttpServletResponse response) 
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp)
             throws ServletException, IOException {
-        
+
+        String idParam = req.getParameter("id");
+        if (idParam == null || idParam.isBlank()) {
+            resp.sendError(HttpServletResponse.SC_BAD_REQUEST, "Parâmetro id é obrigatório.");
+            return;
+        }
+
+        long id;
         try {
-            String produtoIdStr = request.getParameter("id");
-            int produtoId = 1; // Default
-            
-            if (produtoIdStr != null && !produtoIdStr.isEmpty()) {
-                try {
-                    produtoId = Integer.parseInt(produtoIdStr);
-                } catch (NumberFormatException e) {
-                    produtoId = 1;
-                }
-            }
-            
-            // Buscar produto
-            Produto produto = produtoDAO.buscarPorId(produtoId);
+            id = Long.parseLong(idParam);
+        } catch (NumberFormatException e) {
+            resp.sendError(HttpServletResponse.SC_BAD_REQUEST, "id inválido.");
+            return;
+        }
+
+        ProdutoDAO produtoDAO = new ProdutoDAO();
+        try {
+            Produto produto = produtoDAO.buscarPorId(id);
             if (produto == null) {
-                response.sendError(HttpServletResponse.SC_NOT_FOUND, "Produto não encontrado");
+                resp.sendError(HttpServletResponse.SC_NOT_FOUND, "Produto não encontrado.");
                 return;
             }
-            
-            // Buscar produtos relacionados
-            List<Produto> relacionados = produtoDAO.buscarRelacionados(produtoId, produto.getTipo());
-            
-            // Buscar avaliações
-            List<Avaliacao> avaliacoes = avaliacaoDAO.buscarPorProduto(produtoId);
-            
-            request.setAttribute("produto", produto);
-            request.setAttribute("relacionados", relacionados);
-            request.setAttribute("avaliacoes", avaliacoes);
-            
-            // Contar itens no carrinho
-            HttpSession session = request.getSession();
-            Integer carrinhoCount = (Integer) session.getAttribute("carrinhoCount");
-            if (carrinhoCount == null) {
-                carrinhoCount = 0;
-            }
-            request.setAttribute("carrinhoCount", carrinhoCount);
-            
-            // Forward para produto.jsp
-            RequestDispatcher dispatcher = request.getRequestDispatcher("/produto.jsp");
-            dispatcher.forward(request, response);
-            
-        } catch (Exception e) {
-            e.printStackTrace();
-            response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "Erro ao carregar produto");
+
+            // relacionados bem simples: últimos itens
+            List<Produto> relacionados = produtoDAO.buscarRecentes(4);
+
+            req.setAttribute("produto", produto);
+            req.setAttribute("relacionados", relacionados);
+
+            req.getRequestDispatcher("/produto.jsp").forward(req, resp);
+
+        } catch (SQLException e) {
+            throw new ServletException("Erro ao buscar produto", e);
         }
     }
 }
-
