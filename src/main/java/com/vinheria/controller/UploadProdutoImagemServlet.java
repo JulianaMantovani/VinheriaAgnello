@@ -1,84 +1,82 @@
 package com.vinheria.controller;
 
+import com.vinheria.dao.ProdutoDAO;
 import com.vinheria.dao.ProdutoImagemDAO;
 import com.vinheria.model.ProdutoImagem;
-import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
-import software.amazon.awssdk.core.sync.RequestBody;
-import software.amazon.awssdk.regions.Region;
-import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 import javax.servlet.ServletException;
-import javax.servlet.annotation.MultipartConfig;
 import javax.servlet.annotation.WebServlet;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import javax.servlet.http.Part;
 import java.io.IOException;
-import java.io.InputStream;
-import java.time.Instant;
-import java.util.Optional;
+import java.sql.SQLException;
+import java.util.List;
 
-@WebServlet(name = "UploadProdutoImagemServlet", urlPatterns = {"/admin/upload-produto-imagem"})
-@MultipartConfig
+@WebServlet(name = "UploadProdutoImagemServlet", urlPatterns = {"/admin/upload-imagem"})
 public class UploadProdutoImagemServlet extends HttpServlet {
-    private S3Client s3;
+
+    private final ProdutoDAO produtoDAO = new ProdutoDAO();
+    private final ProdutoImagemDAO produtoImagemDAO = new ProdutoImagemDAO();
 
     @Override
-    public void init() throws ServletException {
-        String region = Optional.ofNullable(System.getenv("AWS_REGION")).orElse("us-east-1");
-        this.s3 = S3Client.builder()
-                .region(Region.of(region))
-                .credentialsProvider(DefaultCredentialsProvider.create())
-                .build();
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        try {
+            // carrega dados para a tela
+            req.setAttribute("produtos", produtoDAO.listarTodos());     // precisa do listarTodos() no ProdutoDAO
+            req.setAttribute("imagens", produtoImagemDAO.listAll());    // já existe no seu DAO
+
+            // mensagem de sucesso opcional (após POST + redirect)
+            if ("1".equals(req.getParameter("ok"))) {
+                req.setAttribute("msgSucesso", "Imagem cadastrada com sucesso!");
+            }
+
+            req.getRequestDispatcher("/admin/upload.jsp").forward(req, resp);
+        } catch (Exception e) {
+            encaminharErro(req, resp, e, "Falha ao carregar página de upload");
+        }
     }
 
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        String bucket = System.getenv("S3_BUCKET");
-        if (bucket == null || bucket.isBlank()) {
-            resp.sendError(500, "S3_BUCKET não configurado");
-            return;
-        }
-        String produtoIdStr = req.getParameter("produtoId");
-        if (produtoIdStr == null || produtoIdStr.isBlank()) {
-            resp.sendError(400, "produtoId é obrigatório");
-            return;
-        }
-        long produtoId = Long.parseLong(produtoIdStr);
-        Part filePart = req.getPart("file");
-        if (filePart == null || filePart.getSize() == 0) {
-            resp.sendError(400, "Arquivo ausente");
-            return;
-        }
-        String safeName = filePart.getSubmittedFileName().replaceAll("[^a-zA-Z0-9._-]", "_");
-        String key = "produto/" + produtoId + "/" + Instant.now().toEpochMilli() + "-" + safeName;
+        req.setCharacterEncoding("UTF-8");
 
-        try (InputStream in = filePart.getInputStream()) {
-            s3.putObject(PutObjectRequest.builder()
-                            .bucket(bucket)
-                            .key(key)
-                            .contentType(filePart.getContentType())
-                            .build(),
-                    RequestBody.fromInputStream(in, filePart.getSize()));
-        }
+        String produtoIdStr = req.getParameter("produtoId");  // <select name="produtoId"> no upload.jsp
+        String imageUrl     = req.getParameter("imageUrl");    // <input name="imageUrl"> no upload.jsp
 
-        String url = "s3://" + bucket + "/" + key;
-
-        // Salva no banco
         try {
-            ProdutoImagemDAO dao = new ProdutoImagemDAO();
-            ProdutoImagem pi = new ProdutoImagem();
-            pi.setProdutoId(produtoId);
-            pi.setS3Key(key);
-            pi.setUrl(url);
-            dao.insert(pi);
-        } catch (Exception e) {
-            // Obs: em caso de erro de DB, o objeto fica no S3; considere fila/rollback em produção
-            throw new ServletException("Erro ao salvar no banco: " + e.getMessage(), e);
-        }
+            // validações simples
+            if (produtoIdStr == null || produtoIdStr.isBlank()) {
+                throw new IllegalArgumentException("Produto é obrigatório.");
+            }
+            if (imageUrl == null || imageUrl.isBlank()) {
+                throw new IllegalArgumentException("URL da imagem é obrigatória.");
+            }
 
-        resp.sendRedirect(req.getContextPath() + "/admin/imagens.jsp?ok=1&produtoId=" + produtoId);
+            long produtoId = Long.parseLong(produtoIdStr);
+
+            ProdutoImagem img = new ProdutoImagem();
+            img.setProdutoId(produtoId);
+            // se você usa S3 presigned key, preencha aqui quando tiver: img.setS3Key(...);
+            img.setUrl(imageUrl.trim());
+
+            produtoImagemDAO.insert(img);
+
+            // PRG: Post/Redirect/Get para evitar reenvio do formulário
+            resp.sendRedirect(req.getContextPath() + "/admin/upload-imagem?ok=1");
+        } catch (NumberFormatException e) {
+            encaminharErro(req, resp, e, "ID de produto inválido.");
+        } catch (IllegalArgumentException | SQLException e) {
+            encaminharErro(req, resp, e, e.getMessage());
+        } catch (Exception e) {
+            encaminharErro(req, resp, e, "Erro inesperado ao salvar imagem.");
+        }
+    }
+
+    private void encaminharErro(HttpServletRequest req, HttpServletResponse resp, Exception e, String msg)
+            throws ServletException, IOException {
+        req.setAttribute("errorMessage", msg);
+        req.setAttribute("stacktrace", e);
+        req.getRequestDispatcher("/error.jsp").forward(req, resp);
     }
 }
